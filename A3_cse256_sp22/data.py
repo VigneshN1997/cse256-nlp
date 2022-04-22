@@ -124,6 +124,27 @@ def learn_unigram(data, verbose=True):
         print("sample 2: ", " ".join(str(x) for x in sampler.sample_sentence([])))
     return unigram
 
+def learn_trigram(data, verbose=True):
+    """Learns a unigram model from data.train.
+
+    It also evaluates the model on data.dev and data.test, along with generating
+    some sample sentences from the model.
+    """
+    from lm import TrigramLaplace
+    trigram = TrigramLaplace()
+    trigram.fit_corpus(data.train)
+    if verbose:
+        print("vocab:", len(trigram.vocab()))
+        # evaluate on train, test, and dev
+        print("train:", trigram.perplexity(data.train))
+        print("dev  :", trigram.perplexity(data.dev))
+        print("test :", trigram.perplexity(data.test))
+        from generator import Sampler
+        sampler = Sampler(trigram)
+        print("sample 1: ", " ".join(str(x) for x in sampler.sample_sentence([])))
+        print("sample 2: ", " ".join(str(x) for x in sampler.sample_sentence([])))
+    return trigram
+
 def print_table(table, row_names, col_names, latex_file = None):
     """Pretty prints the table given the table, and row and col names.
 
@@ -156,7 +177,8 @@ if __name__ == "__main__":
         print(dname)
         data = read_texts("data/corpora.tar.gz", dname)
         datas.append(data)
-        model = learn_unigram(data)
+        model = learn_trigram(data)
+        # model = learn_unigram(data)
         models.append(model)
     # compute the perplexity of all pairs
     n = len(dnames)
