@@ -130,8 +130,8 @@ def learn_trigram(data, verbose=True):
     It also evaluates the model on data.dev and data.test, along with generating
     some sample sentences from the model.
     """
-    from lm import TrigramLaplace
-    trigram = TrigramLaplace()
+    from lm import TrigramLinInter
+    trigram = TrigramLinInter()
     trigram.fit_corpus(data.train)
     if verbose:
         print("vocab:", len(trigram.vocab()))
