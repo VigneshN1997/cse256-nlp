@@ -174,16 +174,12 @@ def replace_rare_words_diff(corpus_file, output_corpus_file, rare_suffix_file, r
         new_sent = []
         for word, ne_tag in sent:
             if word in rare_words:
-                # if word[-2:] in suffixes_read:
-                #     new_sent.append(("_2SUFF_", ne_tag))
-                # elif word[-3:] in suffixes_read:
-                #     new_sent.append(("_3SUFF_", ne_tag))
                 
                 if word[-2:] in suffixes_read:
                     new_sent.append(("_" + word[-2:] + "_", ne_tag))
                 elif word[-3:] in suffixes_read:
                     new_sent.append(("_" + word[-3:] + "_", ne_tag))
-                elif word.isupper():
+                if word.isupper():
                     new_sent.append(("_ABBR_", ne_tag))
                 elif word[0].isupper():
                     new_sent.append(("_PROPER_NOUN_", ne_tag))
@@ -268,15 +264,15 @@ class Hmm(object):
             elif parts[1].endswith("GRAM"):
                 n = int(parts[1].replace("-GRAM",""))
                 ngram = tuple(parts[2:])
-                # if n == 3:
-                #     print(ngram)
                 self.ngram_counts[n-1][ngram] = count
 
 class BaseTagger():
-    def __init__(self, hmm, counts_file):
+    def __init__(self, hmm, counts_file, rare_words_suff_dict={}):
         self.hmm = hmm
         self.counts_file = counts_file
         self.emission_probs = {}
+        self.rare_words_suff_dict = rare_words_suff_dict
+        
         
     
     def find_emission_probabilities(self):
@@ -288,6 +284,20 @@ class BaseTagger():
             if ne_tag not in self.emission_probs[word]:
                 self.emission_probs[word][ne_tag] = 0.0
             self.emission_probs[word][ne_tag] = float(self.hmm.emission_counts[(word, ne_tag)]) / float(self.hmm.ngram_counts[0][(ne_tag,)])
+
+    def get_rare_word(self, word):
+        if len(word) >= 3:
+            if word[-2:] in self.rare_words_suff_dict:
+                return "_" + word[-2:] + "_"
+            elif word[-3:] in self.rare_words_suff_dict:
+                return "_" + word[-3:] + "_"
+            elif word.isupper():
+                return "_ABBR_"
+            elif word[0].isupper():
+                return "_PROPER_NOUN_"
+            elif word.isdecimal():
+                return "_NUMBER_"
+        return "_RARE_"
 
     def tag_word(self, word):
         max_prob = 0.0
@@ -305,7 +315,8 @@ class BaseTagger():
             new_sent = []
             for word in sent:
                 if word not in self.emission_probs:
-                    tag = self.tag_word("_RARE_")
+                    rare_word = self.get_rare_word(word)
+                    tag = self.tag_word(rare_word)
                 else:
                     tag = self.tag_word(word)
                 
@@ -314,13 +325,45 @@ class BaseTagger():
         write_sentences(new_sentences, outfile)
 
 class TrigramHMMTagger(BaseTagger):
-    def __init__(self, hmm, counts_file, rare_words_suff_dict):
-        super().__init__(hmm, counts_file)
+    def __init__(self, hmm, counts_file, rare_words_suff_dict, lamdas=[0.2, 0.3, 0.5]):
+        super().__init__(hmm, counts_file, rare_words_suff_dict)
         self.param_probs = {}
-        self.rare_words_suff_dict = rare_words_suff_dict
+        self.lamda = lamdas
+        
 
-    def find_param_probabilities(self):
+    def find_param_probabilities(self, smooth=False):
         self.find_emission_probabilities()
+        if smooth:
+            unigram_sum = 0.0
+            for w in self.hmm.ngram_counts[0]:
+                # print(w)
+                unigram_sum += float(self.hmm.ngram_counts[0][w])
+            for (word_2, word_1, word_0) in self.hmm.ngram_counts[2]:
+                t_trigram_count = float(self.hmm.ngram_counts[2][(word_2, word_1, word_0)])
+                t_bigram_count = float(self.hmm.ngram_counts[1][(word_2, word_1)])
+                b_bigram_count = float(self.hmm.ngram_counts[1][(word_1, word_0)])
+                # print(self.hmm.ngram_counts[0][(word_1,)])
+                b_unigram_count = float(self.hmm.ngram_counts[0][(word_1,)])
+                u_unigram_count = float(self.hmm.ngram_counts[0][(word_0,)])
+
+                trigram_prob = 0.0
+                if t_trigram_count != 0.0 and t_bigram_count != 0.0:
+                    trigram_prob = t_trigram_count / t_bigram_count
+                bigram_prob = 0.0 
+                if b_bigram_count != 0.0 and b_unigram_count != 0.0:
+                    bigram_prob = b_bigram_count / b_unigram_count
+                unigram_prob = 0.0
+                if u_unigram_count != 0.0 and unigram_sum != 0.0:
+                    unigram_prob = u_unigram_count / unigram_sum
+                
+                if word_2 not in self.param_probs:
+                    self.param_probs[word_2] = {}
+                if word_1 not in self.param_probs[word_2]:
+                    self.param_probs[word_2][word_1] = {}
+
+                self.param_probs[word_2][word_1][word_0] = self.lamda[0] * unigram_prob + self.lamda[1] * bigram_prob + self.lamda[1] * trigram_prob
+            return
+
         for (word_2, word_1, word_0) in self.hmm.ngram_counts[2]:
             trigram_count = self.hmm.ngram_counts[2][(word_2, word_1, word_0)]
             bigram_count = self.hmm.ngram_counts[1][(word_2, word_1)]
@@ -331,58 +374,24 @@ class TrigramHMMTagger(BaseTagger):
                 self.param_probs[word_2][word_1] = {}
             
             self.param_probs[word_2][word_1][word_0] = q_prob
-            # print(self.param_probs[word_2][word_1][word_0])
-            
-            # print("word0 | word1, word2: " + str(word_0) + " " + str(word_1) + str(word_2))
-            # print("prob:" + str(self.param_probs[word_2][word_1][word_0]))
     
-    def get_rare_word(self, word):
-        # w = word[1:-1]
-        if len(word) >= 3:
-            if word[-2:] in self.rare_words_suff_dict:
-                return "_" + word[-2:] + "_"
-                # return "_2SUFF_"
-            elif word[-3:] in self.rare_words_suff_dict:
-                return "_" + word[-3:] + "_"
-                # return "_3SUFF_"
-            elif word.isupper():
-                return "_ABBR_"
-            elif word[0].isupper():
-                return "_PROPER_NOUN_"
-            elif word.isdecimal():
-                return "_NUMBER_"
-        return "_RARE_"
 
     def compute_prob(self, dp_mat, k, u, v, w, sentence, em_prob_compute=True):
         
         if k - 1 not in dp_mat:
-            # print("here1")
-            # return log(0.0000001, 2)
             return 0.0
         if w not in dp_mat[k - 1]:
-            # print("here2", w, k)
-            # print(dp_mat)
-            # print(dp_mat[1])
-            # return log(0.0000001, 2)
             return 0.0
         if u not in dp_mat[k - 1][w]:
-            # print("here3")
-            # return log(0.0000001, 2)
             return 0.0
         
         log_mat_prob = dp_mat[k - 1][w][u]
 
         if w not in self.param_probs:
-            # print("here4")
-            # return log(0.0000001, 2)
             return 0.0
         if u not in self.param_probs[w]:
-            # print("here5")
-            # return log(0.0000001, 2)
             return 0.0
         if v not in self.param_probs[w][u]:
-            # print("here6")
-            # return log(0.0000001, 2)
             return 0.0
         q_prob = self.param_probs[w][u][v]
         log_q_prob = log(q_prob, 2)
@@ -390,14 +399,9 @@ class TrigramHMMTagger(BaseTagger):
             word = sentence[k - 1]
             if word not in self.emission_probs:
                 word = self.get_rare_word(word)
-            # print(word, v, self.emission_probs[word])
             if word not in self.emission_probs:
-                # print("here7")
-                # return log(0.0000001, 2)
                 return 0.0
             if v not in self.emission_probs[word]:
-                # print("here8")
-                # return log(0.0000001, 2)
                 return 0.0
             em_prob = self.emission_probs[word][v]
             log_em_prob = log(em_prob, 2)
@@ -449,13 +453,9 @@ class TrigramHMMTagger(BaseTagger):
         tag_n_1 = None
         tag_n = None
         max_log_prob = 0.0
-        # print(tag_set)
         for u in tag_set:
             for v in tag_set:
-                # print("hereeee")
                 log_prob = self.compute_prob(dp_mat, n+1, v, "STOP", u, sentence, False)
-                # if (n <= 2):
-                #     print("done")
                 if log_prob >= max_log_prob:
                     max_log_prob = log_prob
                     tag_n_1 = u
@@ -465,18 +465,11 @@ class TrigramHMMTagger(BaseTagger):
         tags[n - 1] = tag_n
         # print(tags)
         for k in range(n - 3, -1, -1):
-            # print(k)
-            # print('tag:' + str(tags[k + 1]))
-            # print('tag:' + str(tags[k + 2]))
             tags[k] = backing_mat[k + 3][tags[k + 1]][tags[k + 2]]
 
-        # print(dp_mat)
         tagged_sentence = []
-        # if n < 5:
-        #     print("<5: " +  str(n))
         for i in range(n):
             tagged_sentence.append((sentence[i], tags[i]))
-        # print(tagged_sentence)
         return tagged_sentence
 
     def tag_corpus(self, corpusfile, outfile):
@@ -505,7 +498,7 @@ if __name__ == "__main__":
         sys.exit(1)
     
     modified_inp = "gene_mod.train"
-    rare_words_cutoff = 3
+    rare_words_cutoff = 5
     modified_inp_suff = "gene_mod_suff.train"
     rare_word_suffix_file = "rare_words.txt"
     # replace_rare_words(input, modified_inp, rare_words_cutoff)
@@ -523,13 +516,15 @@ if __name__ == "__main__":
     op.close()
     op_read = open("gene.counts", "r")
 
-    # bt = BaseTagger(counter, op_read)
+    # bt = BaseTagger(counter, op_read, rare_word_suffixes)
     # bt.find_emission_probabilities()
     # dev_in  = open("gene.dev")
     # bt.tag_corpus(dev_in, "gene_dev.p1.out")
-    print(rare_word_suffixes)
-    tt = TrigramHMMTagger(counter, op_read, rare_word_suffixes)
-    tt.find_param_probabilities()
+
+
+    # print(rare_word_suffixes)
+    tt = TrigramHMMTagger(counter, op_read, rare_word_suffixes, lamdas=[0.6, 0.3, 0.1])
+    tt.find_param_probabilities(smooth=True)
     dev_in = open("gene.dev")
     tt.tag_corpus(dev_in, "gene_dev.p1.out")
 
